@@ -29,6 +29,14 @@ $(warning "KSU_GIT_VERSION not defined! It is better to make KernelSU a git subm
 ccflags-y += -DKSU_VERSION=16
 endif
 
+ifeq ($(shell grep -q " current_sid(void)" $(srctree)/security/selinux/include/objsec.h; echo $$?),0)
+ccflags-y += -DKSU_COMPAT_HAS_CURRENT_SID
+endif
+
+ifeq ($(shell grep -q "struct selinux_state " $(srctree)/security/selinux/include/security.h; echo $$?),0)
+ccflags-y += -DKSU_COMPAT_HAS_SELINUX_STATE
+endif
+
 ifndef KSU_EXPECTED_SIZE
 KSU_EXPECTED_SIZE := 0x033b
 endif
@@ -47,6 +55,51 @@ $(info -- KernelSU Manager signature hash: $(KSU_EXPECTED_HASH))
 
 ccflags-y += -DEXPECTED_SIZE=$(KSU_EXPECTED_SIZE)
 ccflags-y += -DEXPECTED_HASH=\"$(KSU_EXPECTED_HASH)\"
+
+ccflags-y += -DKSU_UMOUNT
+
+ifneq ($(shell grep -Eq "^static int can_umount" $(srctree)/fs/namespace.c; echo $$?),0)
+$(info -- KSU: adding function 'static int can_umount(const struct path *path, int flags);' to $(srctree)/fs/namespace.c)
+CAN_UMOUNT = static int can_umount(const struct path *path, int flags)\n\
+{\n\t\
+        struct mount *mnt = real_mount(path->mnt);\n\t\
+        if (flags & ~(MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW))\n\t\t\
+                return -EINVAL;\n\t\
+        if (!may_mount())\n\t\t\
+                return -EPERM;\n\t\
+        if (path->dentry != path->mnt->mnt_root)\n\t\t\
+                return -EINVAL;\n\t\
+        if (!check_mnt(mnt))\n\t\t\
+                return -EINVAL;\n\t\
+        if (mnt->mnt.mnt_flags & MNT_LOCKED)\n\t\t\
+                return -EINVAL;\n\t\
+        if (flags & MNT_FORCE && !capable(CAP_SYS_ADMIN))\n\t\t\
+                return -EPERM;\n\t\
+        return 0;\n\
+}\n
+$(shell sed -i '/^static bool is_mnt_ns_file/i $(CAN_UMOUNT)' $(srctree)/fs/namespace.c;)
+endif
+
+ifneq ($(shell grep -Eq "^int path_umount" $(srctree)/fs/namespace.c; echo $$?),0)
+$(info -- KSU: adding function 'int path_umount(struct path *path, int flags);' to $(srctree)/fs/namespace.c)
+PATH_UMOUNT = int path_umount(struct path *path, int flags)\n\
+{\n\t\
+        struct mount *mnt = real_mount(path->mnt);\n\t\
+        int ret;\n\t\
+        ret = can_umount(path, flags);\n\t\
+        if (!ret)\n\t\t\
+                ret = do_umount(mnt, flags);\n\t\
+        dput(path->dentry);\n\t\
+        mntput_no_expire(mnt);\n\t\
+        return ret;\n\
+}\n
+$(shell sed -i '/^static bool is_mnt_ns_file/i $(PATH_UMOUNT)' $(srctree)/fs/namespace.c;)
+endif
+
+ifneq ($(shell grep -Eq "^int path_umount" $(srctree)/fs/internal.h; echo $$?),0)
+$(shell sed -i '/^extern void __init mnt_init/a int path_umount(struct path *path, int flags);' $(srctree)/fs/internal.h;)
+$(info -- KSU: adding 'int path_umount(struct path *path, int flags);' to $(srctree)/fs/internal.h)
+endif
 
 ccflags-y += -Wno-implicit-function-declaration -Wno-strict-prototypes -Wno-int-conversion -Wno-gcc-compat
 ccflags-y += -Wno-declaration-after-statement -Wno-unused-function
