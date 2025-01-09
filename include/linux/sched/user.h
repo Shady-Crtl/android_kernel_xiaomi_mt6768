@@ -54,7 +54,6 @@ struct user_struct {
       u64 android_kabi_reserved7;
       u64 android_kabi_reserved8;
 
-
 };
 
 extern int uids_sysfs_init(void);
